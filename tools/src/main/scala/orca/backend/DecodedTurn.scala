@@ -37,17 +37,12 @@ import scala.util.control.NonFatal
   */
 private[backend] object DecodedTurn:
 
-  /** Cap on in-flight unread events. The reader blocks once full, so a slow
-    * consumer's backpressure flows back into the subprocess pipe.
-    */
-  private val ChannelCapacity: Int = 1024
-
   def start[B <: BackendTag, S](
       source: StreamSource,
       spec: DecodedTurnSpec,
       decoder: LineDecoder[B, S]
   )(using Ox): LiveTurn[B] =
-    val channel = Channel.buffered[TurnEvent](ChannelCapacity)
+    val channel = Channel.buffered[TurnEvent](LiveTurnEvents.ChannelCapacity)
     def neutral(event: NeutralEvent): Unit =
       channel.sendOrClosed(event).discard
     spec.openingPrompt.foreach(p => neutral(TurnEvent.UserMessage(p)))
@@ -218,7 +213,7 @@ private[backend] object DecodedTurn:
             false
           case _ =>
             send(event)
-            open || event.opensMessage
+            TurnMessageGrammar.activityAfter(open, event)
 
     private def send(event: TurnEvent): Unit =
       channel.sendOrClosed(event).discard

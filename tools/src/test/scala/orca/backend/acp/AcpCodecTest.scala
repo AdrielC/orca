@@ -90,7 +90,7 @@ class AcpCodecTest extends munit.FunSuite:
   test(
     "initialize requests pin ACP v1 and advertise no filesystem or terminal access"
   ):
-    val json = WireJson.write(InitializeRequest(Version, ClientCapabilities()))
+    val json = WireJson.write(AcpClientConfig.defaultInitialize)
     val request = decode[InitializeRequest](json.value)
     assertEquals(request.protocolVersion, 1)
     assertEquals(request.clientCapabilities.terminal, false)

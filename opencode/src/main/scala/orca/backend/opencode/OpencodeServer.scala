@@ -60,8 +60,10 @@ private[opencode] object OpencodeServer:
 
   private val ListeningLine = """listening on (https?://\S+)""".r
 
+  import orca.subprocess.PipedCliDiagnostics
+
   /** Cap on stderr lines kept for a start-failure message. */
-  private val MaxErrTailLines = 50
+  private val MaxErrTailLines = PipedCliDiagnostics.StderrTailCapacity
 
   /** A server owned by the current scope: the process is spawned on the first
     * [[OpencodeServer.http]] call, so a backend wired but never used spawns

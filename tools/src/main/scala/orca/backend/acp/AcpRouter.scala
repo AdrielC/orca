@@ -56,6 +56,8 @@ private[backend] final case class AcpRouter private (
             )
           )
 
+  def abandon(id: RequestId): AcpRouter = copy(pending = pending - id)
+
   def receive(line: String): (AcpRouter, AcpInbound) =
     JsonRpc.decode(line) match
       case Left(error)    => (this, AcpInbound.Malformed(error))

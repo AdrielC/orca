@@ -34,9 +34,9 @@ package orca.backend
   * id). It is never `Some("")`.
   *
   * [[opensMessage]] is the single source of truth for the activity/neutral
-  * split above, dispatched on by both [[DecodedTurn]] (the funnel) and
-  * [[orca.backend.TurnEventConformance]] (the oracle that asserts this grammar
-  * over a recorded sequence).
+  * split above. [[TurnMessageGrammar]] applies it to both line-stream and ACP
+  * turns. [[orca.backend.TurnEventConformance]] asserts the grammar over a
+  * recorded sequence.
   */
 private[orca] enum TurnEvent:
   /** The opening prompt of an interactive turn. Rendered so the user sees

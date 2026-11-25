@@ -61,6 +61,26 @@ class AcpClientTest extends munit.FunSuite:
       try body(client)
       finally client.cleanup()
 
+  test("a prompt can finish after the setup request deadline"):
+    val peer = NotifyingFake()
+    val config = testConfig(_.copy(requestTimeout = 25.millis))
+    withClient(peer, config): client =>
+      forkDiscard:
+        val _ = peer.awaitWrite()
+        ox.sleep(100.millis)
+        peer.enqueueStdout(
+          """{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}"""
+        )
+      val request =
+        PromptRequest(
+          AcpSessionId("sess-a"),
+          Vector(ContentBlock.Text("hello"))
+        )
+      assertEquals(
+        timeout(2.seconds)(client.prompt(request)),
+        Right(PromptResponse(StopReason.EndTurn))
+      )
+
   test("in-flight setup calls correlate when replies arrive in reverse order"):
     val peer = NotifyingFake()
     supervised:
@@ -118,6 +138,7 @@ class AcpClientTest extends munit.FunSuite:
           respondInitialize(peer)
         assert(client.initialize().isRight)
         assertEquals(decided.get(), 1)
+        val _ = peer.awaitWrite()
         assertEquals(peer.writes.size, 2)
         assert(peer.writes.last.contains("""outcome":"cancelled"""))
       finally client.cleanup()

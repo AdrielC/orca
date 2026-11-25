@@ -12,7 +12,6 @@ import ox.{
   UnsupervisedFork,
   discard,
   fork,
-  forkDiscard,
   forkUnsupervised,
   sleep,
   timeout
@@ -66,6 +65,14 @@ private[backend] final class AcpClient private (
           )
         )
 
+  def prompt(request: PromptRequest): Either[AcpSetupFailure, PromptResponse] =
+    call(AcpMethod.Prompt, request, deadline = None).flatMap:
+      case AcpResult.PromptCompleted(value) => Right(value)
+      case other =>
+        Left(
+          AcpSetupFailure.UnexpectedResult(AcpMethod.Prompt, other.toString)
+        )
+
   /** Graceful teardown after a successful turn: close stdin and wait briefly
     * for the process to exit before a forcible tree kill.
     */
@@ -77,7 +84,7 @@ private[backend] final class AcpClient private (
     * synthetic cancel after [[completeSuccessfully]].
     */
   def cancel(sessionId: Option[AcpSessionId] = None): Unit =
-    connection.ask(_.markCancelled(sessionId))
+    connection.tell(_.markCancelled(sessionId))
     waitForProcessExit()
 
   /** Idempotent process teardown; safe from `finally` after success or failure.
@@ -105,10 +112,13 @@ private[backend] final class AcpClient private (
 
   private def call[A: JsonValueCodec](
       method: AcpMethod,
-      params: A
+      params: A,
+      deadline: Option[scala.concurrent.duration.FiniteDuration] = Some(
+        config.requestTimeout
+      )
   ): Either[AcpSetupFailure, AcpResult] =
     val wait = connection.ask(_.beginRequest(method, params))
-    try timeout(config.requestTimeout)(wait.receive())
+    try deadline.fold(wait.receive())(bound => timeout(bound)(wait.receive()))
     catch
       case _: java.util.concurrent.TimeoutException =>
         connection.tell(_.abandonRequest(wait))
@@ -126,20 +136,10 @@ private[backend] object AcpClient:
   )(using Ox): AcpClient =
     val stderrSnapshot = AtomicReference(Vector.empty[String])
     val stderr = fork(drainStderr(process, stderrSnapshot))
-    val updates = Channel.buffered[SessionNotification](256)
-    forkDiscard:
-      try
-        Iterator
-          .continually(updates.receiveOrClosed())
-          .takeWhile(!_.isInstanceOf[ox.channels.ChannelClosed])
-          .foreach:
-            case n: SessionNotification => onUpdate(n)
-            case _                      => ()
-      catch case NonFatal(_) => ()
-    val pushUpdate: SessionNotification => Unit =
-      n => updates.sendOrClosed(n).discard
-    val actor =
-      Actor.create(AcpConnection(process, permission, pushUpdate))
+    val host = AtomicReference[ActorRef[AcpConnection]](null)
+    val actor = Actor.create:
+      AcpConnection(process, permission, onUpdate, host)(using summon[Ox])
+    host.set(actor)
     val reader = forkUnsupervised(readStdout(process, actor))
     new AcpClient(
       config,
@@ -181,8 +181,9 @@ private enum ConnectionPhase:
 private final class AcpConnection(
     process: PipedCliProcess,
     permission: AcpPermissionDecider,
-    pushUpdate: SessionNotification => Unit
-):
+    pushUpdate: SessionNotification => Unit,
+    host: AtomicReference[ActorRef[AcpConnection]]
+)(using Ox):
   private var router: AcpRouter = AcpRouter.empty
   private var nextId: Long = 1L
   private var pending =
@@ -264,8 +265,10 @@ private final class AcpConnection(
             reply.doneOrClosed().discard
         pending = pending - id
       case AcpInbound.PermissionRequested(id, request) =>
-        val outcome = normalizedOutcome(request, permission.decide(request))
-        replyPermission(id, outcome)
+        ox.forkDiscard:
+          val outcome =
+            normalizedOutcome(request, permission.decide(request))
+          Option(host.get()).foreach(_.tell(_.replyPermission(id, outcome)))
       case AcpInbound.Reply(response) =>
         writeSafely(AcpRpc.encodeResponse(response))
       case AcpInbound.Updated(notification) =>
@@ -326,10 +329,7 @@ private final class AcpConnection(
         PermissionOutcome.Cancelled
       case other => other
 
-  private def replyPermission(
-      id: RequestId,
-      outcome: PermissionOutcome
-  ): Unit =
+  def replyPermission(id: RequestId, outcome: PermissionOutcome): Unit =
     val body = RequestPermissionResponse(outcome)
     val frame: RpcMessage.Response =
       RpcMessage.Response(id, Right(WireJson.write(body)))
